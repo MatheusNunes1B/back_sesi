@@ -1,0 +1,19 @@
+{
+  "name": "sesi-leitura",
+  "version": "1.0.0",
+  "description": "App de controle de leitura SESI — backend serverless para Vercel",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "vercel": "^37.0.0"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}
