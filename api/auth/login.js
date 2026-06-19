@@ -1,5 +1,3 @@
-const supabase = require('../../lib/supabase');
-
 const ALLOWED_METHODS = ['POST', 'OPTIONS'];
 
 /**
@@ -30,7 +28,9 @@ module.exports = async function handler(req, res) {
   const isEmail = identifier.includes('@');
   const email = isEmail ? identifier.trim().toLowerCase() : `${identifier.trim()}@aluno.sesi.sp.br`;
 
+  let supabase;
   try {
+    supabase = require('../../lib/supabase');
     if (!supabase) {
       return res.status(500).json({ error: 'Erro no servidor: Variaveis de ambiente do Supabase nao configuradas no Vercel.' });
     }

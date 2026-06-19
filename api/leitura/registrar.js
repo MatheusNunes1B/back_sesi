@@ -1,6 +1,3 @@
-const supabase = require('../../lib/supabase');
-const { verifyAuth } = require('../../lib/auth');
-
 const LIMITE_DIARIO = 16; // minutos máximos por dia
 
 /**
@@ -20,6 +17,17 @@ module.exports = async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Método não permitido.' });
+
+  let supabase, verifyAuth;
+  try {
+    supabase = require('../../lib/supabase');
+    verifyAuth = require('../../lib/auth').verifyAuth;
+    if (!supabase) {
+      return res.status(500).json({ error: 'Variáveis de ambiente ausentes.' });
+    }
+  } catch (err) {
+    return res.status(500).json({ error: 'Erro de require: ' + err.message });
+  }
 
   // 1. Autenticação
   const { user, error: authError } = await verifyAuth(req, res);
