@@ -5,34 +5,37 @@
 
 -- ── Extensões ────────────────────────────────────────────────────
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- ── Escolas ──────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS public.escolas (
-  id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  nome       TEXT NOT NULL,
-  cidade     TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+-- ── Alunos / Perfis ──────────────────────────────────────────────
+-- Substituímos "profiles" por "alunos", pois o back-end (register.js) 
+-- e o front-end (auth.js) esperam ler/escrever na tabela "alunos".
+CREATE TABLE IF NOT EXISTS public.alunos (
+  id        UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  rm        TEXT UNIQUE,
+  nome      TEXT NOT NULL,
+  turma     TEXT,
+  ano       TEXT,
+  email     TEXT UNIQUE NOT NULL,
+  role      TEXT NOT NULL DEFAULT 'aluno'
+              CHECK (role IN ('aluno', 'professor', 'responsavel', 'admin')),
+  avatar    TEXT DEFAULT '🧒',
+  criado_em TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ── Perfis (um por usuário do Supabase Auth) ─────────────────────
--- Criado automaticamente via trigger quando o usuário se registra.
-CREATE TABLE IF NOT EXISTS public.profiles (
-  id            UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  full_name     TEXT NOT NULL,
-  rm            TEXT UNIQUE,                        -- matrícula do aluno (null para responsáveis)
-  role          TEXT NOT NULL DEFAULT 'aluno'
-                  CHECK (role IN ('aluno', 'responsavel', 'admin')),
-  turma         TEXT,                               -- ex: "7A", "9B"
-  escola_id     UUID REFERENCES public.escolas(id),
-  avatar_emoji  TEXT DEFAULT '🧒',
-  created_at    TIMESTAMPTZ DEFAULT NOW(),
-  updated_at    TIMESTAMPTZ DEFAULT NOW()
+-- ── Registros de Leitura ─────────────────────────────────────────
+-- Faltava essa tabela que é usada em `/api/leitura/registrar.js`
+CREATE TABLE IF NOT EXISTS public.registros_leitura (
+  id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  aluno_id  UUID NOT NULL REFERENCES public.alunos(id) ON DELETE CASCADE,
+  minutos   INT NOT NULL CHECK (minutos > 0 AND minutos <= 16),
+  criado_em TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ── Índices úteis ────────────────────────────────────────────────
-CREATE INDEX IF NOT EXISTS idx_profiles_rm       ON public.profiles(rm);
-CREATE INDEX IF NOT EXISTS idx_profiles_escola   ON public.profiles(escola_id);
-CREATE INDEX IF NOT EXISTS idx_profiles_turma    ON public.profiles(turma);
+CREATE INDEX IF NOT EXISTS idx_alunos_rm ON public.alunos(rm);
+CREATE INDEX IF NOT EXISTS idx_registros_aluno_data ON public.registros_leitura(aluno_id, criado_em);
 
 -- ── Trigger: atualiza updated_at ─────────────────────────────────
 CREATE OR REPLACE FUNCTION public.handle_updated_at()
@@ -43,21 +46,24 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS on_profiles_updated ON public.profiles;
-CREATE TRIGGER on_profiles_updated
-  BEFORE UPDATE ON public.profiles
+DROP TRIGGER IF EXISTS on_alunos_updated ON public.alunos;
+CREATE TRIGGER on_alunos_updated
+  BEFORE UPDATE ON public.alunos
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
 
 -- ── Trigger: cria perfil vazio ao registrar usuário ──────────────
--- (Útil quando o cadastro for feito pelo painel do Supabase ou admin)
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
 BEGIN
-  INSERT INTO public.profiles (id, full_name, role)
+  INSERT INTO public.alunos (id, email, nome, role, rm, turma, ano)
   VALUES (
     NEW.id,
-    COALESCE(NEW.raw_user_meta_data->>'full_name', 'Usuário'),
-    COALESCE(NEW.raw_user_meta_data->>'role', 'aluno')
+    NEW.email,
+    COALESCE(NEW.raw_user_meta_data->>'nome', NEW.raw_user_meta_data->>'full_name', 'Usuário'),
+    COALESCE(NEW.raw_user_meta_data->>'role', 'aluno'),
+    NEW.raw_user_meta_data->>'rm',
+    NEW.raw_user_meta_data->>'turma',
+    NEW.raw_user_meta_data->>'ano'
   )
   ON CONFLICT (id) DO NOTHING;
   RETURN NEW;
@@ -70,39 +76,82 @@ CREATE TRIGGER on_auth_user_created
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
 -- ── RLS (Row Level Security) ─────────────────────────────────────
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.escolas  ENABLE ROW LEVEL SECURITY;
-
--- Qualquer usuário autenticado pode ler escolas
-CREATE POLICY "escolas_select" ON public.escolas
-  FOR SELECT TO authenticated USING (true);
+ALTER TABLE public.alunos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.registros_leitura ENABLE ROW LEVEL SECURITY;
 
 -- Usuário só lê o próprio perfil (ou admin vê todos)
-CREATE POLICY "profiles_select_own" ON public.profiles
+CREATE POLICY "alunos_select_own" ON public.alunos
   FOR SELECT TO authenticated
   USING (
     id = auth.uid()
     OR EXISTS (
-      SELECT 1 FROM public.profiles p
+      SELECT 1 FROM public.alunos p
       WHERE p.id = auth.uid() AND p.role = 'admin'
     )
   );
 
 -- Usuário só atualiza o próprio perfil
-CREATE POLICY "profiles_update_own" ON public.profiles
+CREATE POLICY "alunos_update_own" ON public.alunos
   FOR UPDATE TO authenticated
   USING (id = auth.uid());
 
--- ── Dados iniciais de exemplo ─────────────────────────────────────
--- (Remova ou ajuste conforme necessário)
-INSERT INTO public.escolas (nome, cidade)
-VALUES ('SESI Escola SP 001', 'São Paulo')
-ON CONFLICT DO NOTHING;
+CREATE POLICY "aluno_le_proprios_registros" ON public.registros_leitura
+  FOR SELECT TO authenticated
+  USING (auth.uid() = aluno_id);
+
+CREATE POLICY "aluno_insere_proprios_registros" ON public.registros_leitura
+  FOR INSERT TO authenticated
+  WITH CHECK (auth.uid() = aluno_id);
 
 -- ================================================================
--- FIM — Próximos passos:
--- 1. Copie a URL e a anon key do projeto em Settings > API
--- 2. Cole em public/js/supabase.js e no arquivo .env
--- 3. Crie usuários pelo painel Supabase > Authentication > Users
---    usando o e-mail rm<NÚMERO>@sesi.internal e uma senha
+-- INSERÇÃO DE USUÁRIOS DE TESTE (login.js)
 -- ================================================================
+DO $$
+DECLARE
+  uid_aluno UUID := gen_random_uuid();
+  uid_prof UUID := gen_random_uuid();
+  uid_resp UUID := gen_random_uuid();
+BEGIN
+  -- 1. Aluno: rm 123456 / senha: aluno@123
+  IF NOT EXISTS (SELECT 1 FROM auth.users WHERE email = '123456@aluno.sesi.sp.br') THEN
+    INSERT INTO auth.users (
+      id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+    ) VALUES (
+      uid_aluno, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+      '123456@aluno.sesi.sp.br', crypt('aluno@123', gen_salt('bf')), NOW(),
+      '{"provider":"email","providers":["email"]}',
+      '{"role":"aluno","nome":"Aluno Teste","rm":"123456","turma":"7A"}',
+      NOW(), NOW()
+    );
+  END IF;
+
+  -- 2. Professor: prof@sesi.sp.br / prof@123
+  IF NOT EXISTS (SELECT 1 FROM auth.users WHERE email = 'prof@sesi.sp.br') THEN
+    INSERT INTO auth.users (
+      id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+    ) VALUES (
+      uid_prof, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+      'prof@sesi.sp.br', crypt('prof@123', gen_salt('bf')), NOW(),
+      '{"provider":"email","providers":["email"]}',
+      '{"role":"professor","nome":"Professor Teste"}',
+      NOW(), NOW()
+    );
+  END IF;
+
+  -- 3. Responsável: responsavel@email.com / resp@123
+  IF NOT EXISTS (SELECT 1 FROM auth.users WHERE email = 'responsavel@email.com') THEN
+    INSERT INTO auth.users (
+      id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+    ) VALUES (
+      uid_resp, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated',
+      'responsavel@email.com', crypt('resp@123', gen_salt('bf')), NOW(),
+      '{"provider":"email","providers":["email"]}',
+      '{"role":"responsavel","nome":"Responsável Teste"}',
+      NOW(), NOW()
+    );
+  END IF;
+END
+$$;

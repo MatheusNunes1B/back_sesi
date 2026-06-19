@@ -30,20 +30,29 @@ module.exports = async function handler(req, res) {
   const isEmail = identifier.includes('@');
   const email = isEmail ? identifier.trim().toLowerCase() : `${identifier.trim()}@aluno.sesi.sp.br`;
 
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  try {
+    if (!supabase) {
+      return res.status(500).json({ error: 'Erro no servidor: Variaveis de ambiente do Supabase nao configuradas no Vercel.' });
+    }
 
-  if (error) {
-    console.error('[login] Supabase error:', error.message);
-    return res.status(401).json({ error: 'Credenciais inválidas. Verifique seu RM/e-mail e senha.' });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+
+    if (error) {
+      console.error('[login] Supabase error:', error.message);
+      return res.status(401).json({ error: 'Credenciais inválidas. Verifique seu RM/e-mail e senha.' });
+    }
+
+    return res.status(200).json({
+      message: 'Login realizado com sucesso.',
+      session: data.session,
+      user: {
+        id: data.user.id,
+        email: data.user.email,
+        user_metadata: data.user.user_metadata,
+      },
+    });
+  } catch (err) {
+    console.error('[login] Erro inesperado:', err.message);
+    return res.status(500).json({ error: 'Ocorreu um erro interno no servidor.' });
   }
-
-  return res.status(200).json({
-    message: 'Login realizado com sucesso.',
-    session: data.session,
-    user: {
-      id: data.user.id,
-      email: data.user.email,
-      user_metadata: data.user.user_metadata,
-    },
-  });
 };
